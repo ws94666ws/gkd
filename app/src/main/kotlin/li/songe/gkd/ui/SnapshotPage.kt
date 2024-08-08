@@ -15,17 +15,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -49,7 +46,6 @@ import com.blankj.utilcode.util.UriUtils
 import com.ramcosta.composedestinations.annotation.Destination
 import com.ramcosta.composedestinations.annotation.RootNavGraph
 import com.ramcosta.composedestinations.navigation.navigate
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import li.songe.gkd.MainActivity
@@ -59,10 +55,10 @@ import li.songe.gkd.debug.SnapshotExt
 import li.songe.gkd.permission.canWriteExternalStorage
 import li.songe.gkd.permission.requiredPermission
 import li.songe.gkd.ui.component.StartEllipsisText
+import li.songe.gkd.ui.component.waitResult
 import li.songe.gkd.ui.destinations.ImagePreviewPageDestination
 import li.songe.gkd.ui.style.EmptyHeight
 import li.songe.gkd.util.IMPORT_BASE_URL
-import li.songe.gkd.util.LoadStatus
 import li.songe.gkd.util.LocalNavController
 import li.songe.gkd.util.LocalPickContentLauncher
 import li.songe.gkd.util.ProfileTransitions
@@ -85,14 +81,11 @@ fun SnapshotPage() {
 
     val vm = hiltViewModel<SnapshotVm>()
     val snapshots by vm.snapshotsState.collectAsState()
-    val uploadStatus by vm.uploadStatusFlow.collectAsState()
+
+    vm.uploadOptions.ShowDialog()
 
     var selectedSnapshot by remember {
         mutableStateOf<Snapshot?>(null)
-    }
-
-    var showDeleteDlg by remember {
-        mutableStateOf(false)
     }
 
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
@@ -111,7 +104,17 @@ fun SnapshotPage() {
             title = { Text(text = if (snapshots.isEmpty()) "快照记录" else "快照记录-${snapshots.size}") },
             actions = {
                 if (snapshots.isNotEmpty()) {
-                    IconButton(onClick = { showDeleteDlg = true }) {
+                    IconButton(onClick = throttle(fn = vm.viewModelScope.launchAsFn(Dispatchers.IO) {
+                        context.mainVm.dialogFlow.waitResult(
+                            title = "删除记录",
+                            text = "确定删除全部快照记录?",
+                            error = true,
+                        )
+                        snapshots.forEach { s ->
+                            SnapshotExt.removeAssets(s.id)
+                        }
+                        DbSet.snapshotDao.deleteAll()
+                    })) {
                         Icon(
                             imageVector = Icons.Outlined.Delete,
                             contentDescription = null,
@@ -246,9 +249,9 @@ fun SnapshotPage() {
                 } else {
                     Text(
                         text = "生成链接(需科学上网)", modifier = Modifier
-                            .clickable(onClick = {
+                            .clickable(onClick = vm.viewModelScope.launchAsFn(Dispatchers.IO) {
                                 selectedSnapshot = null
-                                vm.uploadZip(snapshotVal)
+                                vm.uploadOptions.startTask(SnapshotExt.getSnapshotZipFile(snapshotVal.id))
                             })
                             .then(modifier)
                     )
@@ -315,94 +318,6 @@ fun SnapshotPage() {
                 )
             }
         }
-    }
-
-    when (val uploadStatusVal = uploadStatus) {
-        is LoadStatus.Failure -> {
-            AlertDialog(
-                title = { Text(text = "上传失败") },
-                text = {
-                    Text(text = uploadStatusVal.exception.let {
-                        it.message ?: it.toString()
-                    })
-                },
-                onDismissRequest = { vm.uploadStatusFlow.value = null },
-                confirmButton = {
-                    TextButton(onClick = {
-                        vm.uploadStatusFlow.value = null
-                    }) {
-                        Text(text = "关闭")
-                    }
-                },
-            )
-        }
-
-        is LoadStatus.Loading -> {
-            AlertDialog(
-                title = { Text(text = "上传文件中") },
-                text = {
-                    LinearProgressIndicator(
-                        progress = { uploadStatusVal.progress },
-                    )
-                },
-                onDismissRequest = { },
-                confirmButton = {
-                    TextButton(onClick = {
-                        vm.uploadJob?.cancel(CancellationException("终止上传"))
-                        vm.uploadJob = null
-                    }) {
-                        Text(text = "终止上传")
-                    }
-                },
-            )
-        }
-
-        is LoadStatus.Success -> {
-            AlertDialog(title = { Text(text = "上传完成") }, text = {
-                Text(text = IMPORT_BASE_URL + uploadStatusVal.result.id)
-            }, onDismissRequest = {}, dismissButton = {
-                TextButton(onClick = {
-                    vm.uploadStatusFlow.value = null
-                }) {
-                    Text(text = "关闭")
-                }
-            }, confirmButton = {
-                TextButton(onClick = {
-                    ClipboardUtils.copyText(IMPORT_BASE_URL + uploadStatusVal.result.id)
-                    toast("复制成功")
-                    vm.uploadStatusFlow.value = null
-                }) {
-                    Text(text = "复制")
-                }
-            })
-        }
-
-        else -> {}
-    }
-
-    if (showDeleteDlg) {
-        AlertDialog(onDismissRequest = { showDeleteDlg = false },
-            title = { Text(text = "是否删除全部快照记录?") },
-            confirmButton = {
-                TextButton(
-                    onClick = vm.viewModelScope.launchAsFn(Dispatchers.IO) {
-                        showDeleteDlg = false
-                        snapshots.forEach { s ->
-                            SnapshotExt.removeAssets(s.id)
-                        }
-                        DbSet.snapshotDao.deleteAll()
-                    },
-                ) {
-                    Text(text = "是", color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showDeleteDlg = false
-                }) {
-                    Text(text = "否")
-                }
-            })
     }
 }
 

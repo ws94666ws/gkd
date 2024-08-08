@@ -15,12 +15,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Upload
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalTextStyle
@@ -45,7 +48,9 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.viewModelScope
@@ -74,6 +79,8 @@ import li.songe.gkd.shizuku.safeGetTasks
 import li.songe.gkd.ui.component.AuthCard
 import li.songe.gkd.ui.component.SettingItem
 import li.songe.gkd.ui.component.TextSwitch
+import li.songe.gkd.ui.component.updateDialogOptions
+import li.songe.gkd.ui.destinations.ActivityLogPageDestination
 import li.songe.gkd.ui.destinations.SnapshotPageDestination
 import li.songe.gkd.ui.style.EmptyHeight
 import li.songe.gkd.ui.style.itemPadding
@@ -82,12 +89,16 @@ import li.songe.gkd.util.LocalLauncher
 import li.songe.gkd.util.LocalNavController
 import li.songe.gkd.util.ProfileTransitions
 import li.songe.gkd.util.appInfoCacheFlow
+import li.songe.gkd.util.buildLogFile
 import li.songe.gkd.util.json
 import li.songe.gkd.util.launchAsFn
 import li.songe.gkd.util.launchTry
 import li.songe.gkd.util.openApp
 import li.songe.gkd.util.openUri
+import li.songe.gkd.util.saveFileToDownloads
+import li.songe.gkd.util.shareFile
 import li.songe.gkd.util.storeFlow
+import li.songe.gkd.util.throttle
 import li.songe.gkd.util.toast
 import rikka.shizuku.Shizuku
 
@@ -103,9 +114,61 @@ fun AdvancedPage() {
     val snapshotCount by vm.snapshotCountFlow.collectAsState()
 
     ShizukuErrorDialog(vm.shizukuErrorFlow)
+    vm.uploadOptions.ShowDialog()
 
     var showPortDlg by remember {
         mutableStateOf(false)
+    }
+    var showShareLogDlg by remember {
+        mutableStateOf(false)
+    }
+    if (showShareLogDlg) {
+        Dialog(onDismissRequest = { showShareLogDlg = false }) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                shape = RoundedCornerShape(16.dp),
+            ) {
+                val modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+                Text(
+                    text = "分享到其他应用", modifier = Modifier
+                        .clickable(onClick = throttle {
+                            showShareLogDlg = false
+                            vm.viewModelScope.launchTry(Dispatchers.IO) {
+                                val logZipFile = buildLogFile()
+                                context.shareFile(logZipFile, "分享日志文件")
+                            }
+                        })
+                        .then(modifier)
+                )
+                Text(
+                    text = "保存到下载", modifier = Modifier
+                        .clickable(onClick = throttle {
+                            showShareLogDlg = false
+                            vm.viewModelScope.launchTry(Dispatchers.IO) {
+                                val logZipFile = buildLogFile()
+                                context.saveFileToDownloads(logZipFile)
+                            }
+                        })
+                        .then(modifier)
+                )
+                Text(
+                    text = "生成链接(需科学上网)",
+                    modifier = Modifier
+                        .clickable(onClick = throttle {
+                            showShareLogDlg = false
+                            vm.viewModelScope.launchTry(Dispatchers.IO) {
+                                val logZipFile = buildLogFile()
+                                vm.uploadOptions.startTask(logZipFile)
+                            }
+                        })
+                        .then(modifier)
+                )
+            }
+        }
     }
 
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
@@ -186,9 +249,10 @@ fun AdvancedPage() {
                                 Text(
                                     text = "http://127.0.0.1:${store.httpServerPort}",
                                     color = MaterialTheme.colorScheme.primary,
+                                    style = LocalTextStyle.current.copy(textDecoration = TextDecoration.Underline),
                                     modifier = Modifier.clickable {
                                         context.openUri("http://127.0.0.1:${store.httpServerPort}")
-                                    }
+                                    },
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Text(text = "仅本设备可访问")
@@ -197,6 +261,7 @@ fun AdvancedPage() {
                                 Text(
                                     text = "http://${host}:${store.httpServerPort}",
                                     color = MaterialTheme.colorScheme.primary,
+                                    style = LocalTextStyle.current.copy(textDecoration = TextDecoration.Underline),
                                     modifier = Modifier.clickable {
                                         context.openUri("http://${host}:${store.httpServerPort}")
                                     }
@@ -289,7 +354,7 @@ fun AdvancedPage() {
             val floatingRunning by FloatingService.isRunning.collectAsState()
             TextSwitch(
                 name = "悬浮窗服务",
-                desc = "显示截屏按钮,便于用户主动保存快照",
+                desc = "显示截屏按钮,点击即可保存快照",
                 checked = floatingRunning,
                 onCheckedChange = vm.viewModelScope.launchAsFn<Boolean> {
                     if (it) {
@@ -305,7 +370,7 @@ fun AdvancedPage() {
 
             TextSwitch(
                 name = "音量快照",
-                desc = "音量变化时生成快照,悬浮窗按钮不工作时使用",
+                desc = "音量变化时生成快照,若悬浮按钮不工作可使用",
                 checked = store.captureVolumeChange
             ) {
                 storeFlow.value = store.copy(
@@ -315,7 +380,27 @@ fun AdvancedPage() {
 
             TextSwitch(
                 name = "截屏快照",
-                desc = "当用户截屏时保存快照(需手动替换快照图片),仅支持部分小米设备",
+                descContent = {
+                    Row {
+                        Text(
+                            text = "触发截屏时保存快照",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(modifier = Modifier.width(2.dp))
+                        Text(
+                            text = "查看限制",
+                            style = MaterialTheme.typography.bodyMedium.copy(textDecoration = TextDecoration.Underline),
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable(onClick = throttle {
+                                context.mainVm.dialogFlow.updateDialogOptions(
+                                    title = "限制说明",
+                                    text = "仅支持部分小米设备截屏触发\n\n只保存节点信息不保存图片, 用户需要在快照记录里替换截图",
+                                )
+                            })
+                        )
+                    }
+                },
                 checked = store.captureScreenshot
             ) {
                 storeFlow.value = store.copy(
@@ -324,8 +409,8 @@ fun AdvancedPage() {
             }
 
             TextSwitch(
-                name = "隐藏快照状态栏",
-                desc = "当保存快照时,隐藏截图里的顶部状态栏高度区域",
+                name = "隐藏状态栏",
+                desc = "隐藏快照截图顶部状态栏",
                 checked = store.hideSnapshotStatusBar
             ) {
                 storeFlow.value = store.copy(
@@ -334,14 +419,69 @@ fun AdvancedPage() {
             }
 
             TextSwitch(
-                name = "保存快照提示",
-                desc = "保存快照时是否提示\"正在保存快照\"",
+                name = "保存提示",
+                desc = "保存快照时提示\"正在保存快照\"",
                 checked = store.showSaveSnapshotToast
             ) {
                 storeFlow.value = store.copy(
                     showSaveSnapshotToast = it
                 )
             }
+
+            Text(
+                text = "界面记录",
+                modifier = Modifier.titleItemPadding(),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+
+            TextSwitch(
+                name = "记录界面",
+                desc = "记录打开的应用及界面",
+                checked = store.enableActivityLog
+            ) {
+                storeFlow.value = store.copy(
+                    enableActivityLog = it
+                )
+            }
+            SettingItem(
+                title = "界面记录",
+                onClick = {
+                    navController.navigate(ActivityLogPageDestination)
+                }
+            )
+
+            Text(
+                text = "日志",
+                modifier = Modifier.titleItemPadding(),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+
+            TextSwitch(
+                name = "保存日志",
+                desc = "保存7天日志,帮助定位BUG",
+                checked = store.log2FileSwitch,
+                onCheckedChange = {
+                    storeFlow.value = store.copy(
+                        log2FileSwitch = it
+                    )
+                    if (!it) {
+                        context.mainVm.viewModelScope.launchTry(Dispatchers.IO) {
+                            val logFiles = LogUtils.getLogFiles()
+                            if (logFiles.isNotEmpty()) {
+                                logFiles.forEach { f ->
+                                    f.delete()
+                                }
+                                toast("已删除全部日志")
+                            }
+                        }
+                    }
+                })
+
+            SettingItem(title = "导出日志", imageVector = Icons.Default.Upload, onClick = {
+                showShareLogDlg = true
+            })
 
             Text(
                 text = "其它",
